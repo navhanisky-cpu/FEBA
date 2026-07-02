@@ -688,7 +688,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="av-carousel" id="avCarousel"></div>
     <div class="mode-row">
       <button class="mode-pill on" id="modeVideo" onclick="setMode('video')">
-        📹 Video <span class="mp-cost">🪙10</span>
+        📹 Video <span class="mp-cost">🪙3</span>
       </button>
       <button class="mode-pill" id="modeText" onclick="setMode('text')">
         💬 Text <span class="mp-cost">🪙2</span>
@@ -696,13 +696,9 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     </div>
     <button class="btn-start" onclick="startMatch()">
       Start
-      <span class="start-cost">🪙 <span id="startCost">10</span></span>
+      <span class="start-cost">🪙 <span id="startCost">3</span></span>
     </button>
-    <div class="filter-row">
-      <button class="filter-chip on" id="filterAll" onclick="setFilter('all',this)">Everyone</button>
-      <button class="filter-chip" id="filterFemale" onclick="setFilter('female',this)">Women 👩</button>
-      <button class="filter-chip" id="filterMale" onclick="setFilter('male',this)">Men 👨</button>
-    </div>
+    <!-- Gender filter removed — opposite gender matched automatically -->
   </div>
 </div>
 
@@ -775,15 +771,39 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
       </div>
     </div>
     <div class="me-menu">
+      <div class="me-row" onclick="openUsernameChange()"><span class="mr-ico">✏️</span><span class="mr-lbl">Change Username</span><span class="mr-arrow">›</span></div>
       <div class="me-row" onclick="openTopup()"><span class="mr-ico">🪙</span><span class="mr-lbl">Buy Coins</span><span class="mr-arrow">›</span></div>
       <div class="me-row" onclick="showToast('My earnings coming soon')"><span class="mr-ico">💰</span><span class="mr-lbl">My Earnings</span><span class="mr-arrow">›</span></div>
-      <div class="me-row" onclick="showToast('Edit profile coming soon')"><span class="mr-ico">✏️</span><span class="mr-lbl">Edit Profile</span><span class="mr-arrow">›</span></div>
-      <div class="me-row" onclick="showToast('Invite friends coming soon')"><span class="mr-ico">👥</span><span class="mr-lbl">Invite Friends — Earn Coins</span><span class="mr-arrow">›</span></div>
+      <div class="me-row" onclick="openFriends()"><span class="mr-ico">👥</span><span class="mr-lbl">Friends <span id="friendReqBadge" style="display:none;background:var(--red);color:#fff;font-size:.65rem;padding:1px 7px;border-radius:999px;margin-left:5px">0</span></span><span class="mr-arrow">›</span></div>
       <div class="me-row" onclick="showToast('Settings coming soon')"><span class="mr-ico">⚙️</span><span class="mr-lbl">Settings</span><span class="mr-arrow">›</span></div>
       <div class="me-row" onclick="showToast('Help & support coming soon')"><span class="mr-ico">❓</span><span class="mr-lbl">Help & Support</span><span class="mr-arrow">›</span></div>
-      <div class="me-row" onclick="window.open('https://feba-five.vercel.app/privacy.html','_blank')"><span class="mr-ico">🔒</span><span class="mr-lbl">Privacy Policy</span><span class="mr-arrow">›</span></div>
     </div>
     <button class="btn-logout" onclick="doLogout()">Log Out</button>
+  </div>
+</div>
+
+<!-- USERNAME CHANGE SHEET -->
+<div class="topup-ov" id="usernameOv" onclick="if(event.target===this)closeUsernameChange()">
+  <div class="topup-box">
+    <button class="topup-close" onclick="closeUsernameChange()">✕</button>
+    <div class="topup-h">✏️ Change Username</div>
+    <div class="topup-sub">3-20 characters · Letters, numbers, underscores only · Once per 24 hours</div>
+    <label class="tp-email-lbl">New Username</label>
+    <input class="tp-email" type="text" id="usernameInp" placeholder="e.g. cool_user123" maxlength="20"/>
+    <div class="auth-err" id="usernameErr"></div>
+    <button class="btn-buy" id="usernameBtn" onclick="submitUsernameChange()" style="margin-top:8px">
+      ✅ Save Username
+    </button>
+  </div>
+</div>
+
+<!-- FRIENDS SHEET -->
+<div class="topup-ov" id="friendsOv" onclick="if(event.target===this)closeFriends()">
+  <div class="topup-box" style="max-height:80dvh;overflow-y:auto">
+    <button class="topup-close" onclick="closeFriends()">✕</button>
+    <div class="topup-h">👥 Friends</div>
+    <div id="friendRequestsList"></div>
+    <div id="friendsList"></div>
   </div>
 </div>
 
@@ -820,6 +840,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="ct-acts">
       <button class="ct-act gift" onclick="openGiftSheet('chat')">🎁 Gift</button>
       <button class="ct-act video" onclick="escalateToVideo()">📹 Video</button>
+      <button class="ct-act" id="addFriendBtn" style="background:var(--green-bg);color:var(--green)" onclick="addFriendFromChat()">➕ Follow</button>
     </div>
   </div>
   <div class="chat-msgs" id="chatMsgs"></div>
@@ -1086,6 +1107,12 @@ async function onLogin(user) {
   const { data:wallet } = await sb.from('coin_wallets').select('balance').eq('user_id',user.id).maybeSingle();
   userCoins = wallet?.balance || 0;
 
+  // Fetch profile for username + gender
+  const { data: profile } = await sb.from('profiles')
+    .select('gender, username, verification_status')
+    .eq('id', user.id).maybeSingle();
+  if (profile?.gender) currentGender = profile.gender;
+
   // Hide auth, show app
   document.getElementById('signupScr').classList.remove('on');
   document.getElementById('loginScr').classList.remove('on');
@@ -1095,7 +1122,24 @@ async function onLogin(user) {
   document.getElementById('s-match').classList.add('on');
   document.getElementById('tb-match').classList.add('on');
   updateCoinUI();
-  updateMeProfile(user);
+  updateMeProfile(user, profile);
+
+  // Show women a "waiting" message on Match tab instead of Start button
+  if (currentGender === 'woman') {
+    document.querySelector('.btn-start').style.display = 'none';
+    document.querySelector('.mode-row').style.display  = 'none';
+    const matchWrap = document.querySelector('.match-screen');
+    const womenMsg  = document.createElement('div');
+    womenMsg.style.cssText = 'text-align:center;padding:20px;color:var(--mid);font-size:.9rem;line-height:1.7';
+    womenMsg.innerHTML = `<div style="font-size:2rem;margin-bottom:10px">👑</div>
+      <strong>You're live!</strong><br/>
+      Stay online and men will connect to you randomly.<br/>
+      <span style="color:var(--purple);font-weight:600">Accept incoming calls to earn coins from gifts.</span>`;
+    matchWrap.appendChild(womenMsg);
+  }
+
+  // Subscribe to friend requests
+  subscribeFriendRequests();
 
   // Realtime wallet
   sb.channel('wallet-'+user.id)
@@ -1103,14 +1147,10 @@ async function onLogin(user) {
       p => { userCoins=p.new.balance; updateCoinUI(); }
     ).subscribe();
 
-  // Demo: incoming call after 12s
-  if (!callDemoFired) {
+  // Demo: incoming call after 12s (only for women — they receive calls)
+  if (!callDemoFired && currentGender === 'woman') {
     callDemoFired = true;
-    const onlineF = getFilteredMembers().filter(m=>m.on);
-    if (onlineF.length) {
-      const m = onlineF[Math.floor(Math.random()*onlineF.length)];
-      setTimeout(() => showIncomingCall(m.name, m.e), 12000);
-    }
+    setTimeout(() => showIncomingCall('James', '😎'), 12000);
   }
 }
 
@@ -1127,11 +1167,12 @@ async function doLogout() {
   showToast('Logged out. See you soon! 👋');
 }
 
-function updateMeProfile(user) {
-  const name = user.user_metadata?.first_name || user.email?.split('@')[0] || 'You';
-  document.getElementById('meName').textContent  = name;
-  document.getElementById('meEmail').textContent = user.email || '';
-  document.getElementById('ms-coins').textContent = userCoins.toLocaleString();
+function updateMeProfile(user, profile) {
+  const username    = profile?.username ? '@' + profile.username : null;
+  const displayName = username || user.user_metadata?.username || user.email?.split('@')[0] || 'You';
+  document.getElementById('meName').textContent    = displayName;
+  document.getElementById('meEmail').textContent   = user.email || '';
+  document.getElementById('ms-coins').textContent  = userCoins.toLocaleString();
 }
 
 // ── COIN UI ──────────────────────────
@@ -1197,12 +1238,20 @@ function renderMsgList() {
 
 // ── MATCH ────────────────────────────
 function getFilteredMembers() {
-  if (matchFilter === 'female') return MEMBERS.filter(m=>m.gender==='woman');
-  if (matchFilter === 'male')   return MEMBERS.filter(m=>m.gender==='man');
-  return MEMBERS;
+  // Always match opposite gender — no manual filter
+  if (!currentGender) return MEMBERS;
+  return currentGender === 'man'
+    ? MEMBERS.filter(m => m.gender === 'woman')
+    : MEMBERS.filter(m => m.gender === 'man');
 }
 
-function renderAvatarCarousel() {
+function setMode(mode) {
+  matchMode = mode;
+  document.getElementById('modeVideo').classList.toggle('on', mode==='video');
+  document.getElementById('modeText').classList.toggle('on',  mode==='text');
+  // Video: 3 coins for first 15s, then 10/min. Text: 2 coins/min
+  document.getElementById('startCost').textContent = mode==='video' ? '3' : '2';
+}
   const el = document.getElementById('avCarousel');
   if (!el) return;
   const pool = getFilteredMembers().filter(m=>m.on).slice(0,5);
@@ -1226,43 +1275,50 @@ function setFilter(f, el) {
 }
 
 // ── REAL MATCHMAKING ─────────────────
-let currentRoomId    = null;
+let currentRoomId     = null;
 let matchSubscription = null;
-let isWaiting        = false;
+let isWaiting         = false;
+
+// Call cost: 3 coins for first 15s, then 10 coins/min
+const CALL_CONNECT_COST = 3;   // charged immediately on connect
+const CALL_PER_MIN_COST = 10;  // charged every 60s after first 15s
+let callPhase = 'connecting';  // 'connecting' | 'initial' | 'running'
 
 async function startMatch() {
-  const cost = matchMode==='video' ? 10 : 2;
-  if (!spendCoins(cost)) return;
   if (!currentUser) { showToast('Please log in first'); return; }
+
+  // Women cannot make calls — only receive them
+  if (currentGender === 'woman') {
+    showToast('Women receive calls — stay online and men will connect to you!');
+    return;
+  }
+
+  const cost = matchMode === 'video' ? CALL_CONNECT_COST : 2;
+  if (!spendCoins(cost)) return;
 
   document.getElementById('matchOv').classList.add('on');
   isWaiting = true;
 
   try {
-    // Ask Supabase to find or create a match
     const { data, error } = await sb.rpc('find_or_create_match', {
       p_mode:          matchMode,
-      p_gender_filter: matchFilter === 'all' ? 'all' : matchFilter === 'female' ? 'female' : 'male'
+      p_gender_filter: 'female' // men always match with women
     });
 
     if (error) throw error;
-
     currentRoomId = data.room_id;
 
     if (data.matched) {
-      // Instant match found — join immediately
       document.getElementById('matchOv').classList.remove('on');
       isWaiting = false;
       if (matchMode === 'video') await openVC(data.channel_name, null, null);
       else openTextMatch(data.channel_name);
     } else {
-      // Waiting for opponent — subscribe to room updates
+      // Waiting — subscribe for a match
       matchSubscription = sb.channel('room-' + data.room_id)
         .on('postgres_changes', {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'match_rooms',
-          filter: `id=eq.${data.room_id}`
+          event: 'UPDATE', schema: 'public',
+          table: 'match_rooms', filter: `id=eq.${data.room_id}`
         }, async (payload) => {
           if (payload.new.status === 'active' && isWaiting) {
             isWaiting = false;
@@ -1273,16 +1329,16 @@ async function startMatch() {
           }
         }).subscribe();
 
-      // Timeout after 30 seconds — cancel and refund
+      // 30s timeout — refund and cancel
       setTimeout(async () => {
         if (isWaiting) {
           isWaiting = false;
           document.getElementById('matchOv').classList.remove('on');
           if (matchSubscription) { sb.removeChannel(matchSubscription); matchSubscription = null; }
           if (currentRoomId) await sb.rpc('cancel_match', { p_room_id: currentRoomId });
-          earnCoins(cost); // refund
+          earnCoins(cost);
           currentRoomId = null;
-          showToast('No match found — coins refunded. Try again!');
+          showToast('No women online right now — coins refunded. Try again soon!');
         }
       }, 30000);
     }
@@ -1290,7 +1346,7 @@ async function startMatch() {
     console.error('Matchmaking error:', err);
     document.getElementById('matchOv').classList.remove('on');
     isWaiting = false;
-    earnCoins(cost); // refund on error
+    earnCoins(cost);
     showToast('Matching failed — please try again');
   }
 }
@@ -1306,9 +1362,8 @@ async function cancelMatch() {
 }
 
 function openTextMatch(channelName) {
-  // For text matches, open chat with a real user
-  const m = getFilteredMembers().filter(m=>m.on);
-  const demo = m[Math.floor(Math.random()*m.length)];
+  const pool = getFilteredMembers().filter(m => m.on);
+  const demo = pool[Math.floor(Math.random() * pool.length)];
   openChat(demo?.name || 'Match', demo?.e || '😊', true);
 }
 
@@ -1450,12 +1505,18 @@ async function openVC(channelNameOrName, emoji, _unused) {
     await agoraClient.publish([localTracks.audio, localTracks.video]);
 
     document.getElementById('vcDur').textContent = '● Connected · 00:00';
+    callPhase = 'initial'; // first 15 seconds already paid (3 coins)
     callTimer = setInterval(() => {
       callSecs++;
       const m=String(Math.floor(callSecs/60)).padStart(2,'0');
       const s=String(callSecs%60).padStart(2,'0');
       document.getElementById('vcDur').textContent=`● Connected · ${m}:${s}`;
-      if (callSecs%60===0 && !spendCoins(10)) endVC();
+
+      // After 15 seconds, switch to per-minute billing (10 coins/min)
+      if (callSecs === 15) callPhase = 'running';
+      if (callPhase === 'running' && callSecs > 15 && (callSecs - 15) % 60 === 0) {
+        if (!spendCoins(CALL_PER_MIN_COST)) endVC();
+      }
     }, 1000);
 
   } catch (err) {
@@ -1639,6 +1700,137 @@ function claimBonus(){
 }
 
 // ── UTILS ────────────────────────────
+function addFriendFromChat() {
+  if (!activeChat?.userId) {
+    showToast('Friend request sent! 👋');
+    document.getElementById('addFriendBtn').textContent = '✅ Sent';
+    return;
+  }
+  sendFriendRequest(activeChat.userId);
+  document.getElementById('addFriendBtn').textContent = '✅ Sent';
+}
+
+// ── USERNAME CHANGE ───────────────────
+function openUsernameChange() { document.getElementById('usernameOv').classList.add('on'); }
+function closeUsernameChange() { document.getElementById('usernameOv').classList.remove('on'); }
+
+async function submitUsernameChange() {
+  const input  = document.getElementById('usernameInp');
+  const errEl  = document.getElementById('usernameErr');
+  const btn    = document.getElementById('usernameBtn');
+  const newName = input.value.trim();
+
+  if (!newName) { showErr(errEl, 'Enter a username'); return; }
+
+  btn.disabled = true; btn.textContent = '⏳ Saving…';
+  const { data, error } = await sb.rpc('change_username', { p_username: newName });
+  btn.disabled = false; btn.textContent = '✅ Save Username';
+
+  if (error || !data.success) {
+    showErr(errEl, data?.error || error?.message || 'Failed to update username');
+    errEl.classList.add('on');
+    return;
+  }
+
+  errEl.classList.remove('on');
+  closeUsernameChange();
+  showToast(`✅ Username changed to @${newName}`);
+  document.getElementById('meName').textContent = '@' + newName;
+}
+
+// ── FRIENDS SYSTEM ────────────────────
+async function openFriends() {
+  document.getElementById('friendsOv').classList.add('on');
+  await loadFriends();
+}
+function closeFriends() { document.getElementById('friendsOv').classList.remove('on'); }
+
+async function loadFriends() {
+  if (!currentUser) return;
+  const { data: friendships } = await sb.from('friendships')
+    .select('*')
+    .or(`requester_id.eq.${currentUser.id},addressee_id.eq.${currentUser.id}`)
+    .order('created_at', { ascending: false });
+
+  if (!friendships) return;
+
+  const pending  = friendships.filter(f => f.status === 'pending' && f.addressee_id === currentUser.id);
+  const accepted = friendships.filter(f => f.status === 'accepted');
+
+  // Update badge
+  const badge = document.getElementById('friendReqBadge');
+  if (pending.length > 0) {
+    badge.style.display = 'inline'; badge.textContent = pending.length;
+  } else {
+    badge.style.display = 'none';
+  }
+
+  const reqEl = document.getElementById('friendRequestsList');
+  const frdEl = document.getElementById('friendsList');
+
+  reqEl.innerHTML = pending.length ? `
+    <div style="font-size:.78rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin-bottom:10px">
+      Pending Requests (${pending.length})
+    </div>
+    ${pending.map(f => `
+    <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">
+      <div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;font-size:1.1rem">😊</div>
+      <div style="flex:1;font-size:.88rem;font-weight:600;color:var(--dark)">User sent you a request</div>
+      <button onclick="acceptFriend('${f.requester_id}')" style="padding:6px 12px;background:var(--purple);color:#fff;border:none;border-radius:999px;font-size:.75rem;font-weight:700;cursor:pointer">Accept</button>
+      <button onclick="rejectFriend('${f.requester_id}')" style="padding:6px 12px;background:var(--bg);border:1px solid var(--border);border-radius:999px;font-size:.75rem;font-weight:700;cursor:pointer">Decline</button>
+    </div>`).join('')}` : '';
+
+  frdEl.innerHTML = accepted.length ? `
+    <div style="font-size:.78rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;margin:16px 0 10px">
+      Friends (${accepted.length})
+    </div>
+    ${accepted.map(() => `
+    <div style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">
+      <div style="width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--pink),var(--purple));display:flex;align-items:center;justify-content:center;font-size:1.1rem">😊</div>
+      <div style="flex:1;font-size:.88rem;font-weight:600;color:var(--dark)">Friend</div>
+      <span style="font-size:.72rem;color:var(--green)">● Connected</span>
+    </div>`).join('')}` : `<div style="text-align:center;padding:30px;color:var(--muted);font-size:.85rem">No friends yet — connect with people to send friend requests!</div>`;
+}
+
+async function acceptFriend(requesterId) {
+  await sb.rpc('accept_friend_request', { p_requester_id: requesterId });
+  showToast('Friend request accepted! 🎉');
+  await loadFriends();
+}
+
+async function rejectFriend(requesterId) {
+  await sb.rpc('reject_friend_request', { p_requester_id: requesterId });
+  showToast('Request declined');
+  await loadFriends();
+}
+
+async function sendFriendRequest(userId) {
+  if (!currentUser) return;
+  const { data } = await sb.rpc('send_friend_request', { p_addressee_id: userId });
+  if (data?.success) showToast('Friend request sent! 👋');
+  else showToast(data?.error || 'Could not send request');
+}
+
+// Subscribe to incoming friend requests
+function subscribeFriendRequests() {
+  if (!currentUser) return;
+  sb.channel('friends-' + currentUser.id)
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'friendships',
+      filter: `addressee_id=eq.${currentUser.id}`
+    }, () => {
+      const badge = document.getElementById('friendReqBadge');
+      const count = parseInt(badge.textContent || '0') + 1;
+      badge.style.display = 'inline';
+      badge.textContent = count;
+      showToast('👥 You have a new friend request!');
+    }).subscribe();
+}
+
+// ── GIFT FOR WOMEN ────────────────────
+// Women can gift men — override sendGift to allow both directions
+function canSendGift() { return true; } // both genders can gift
+
 function showToast(msg,dur=2600){
   const t=document.getElementById('toastEl');
   t.textContent=msg; t.style.display='block';
