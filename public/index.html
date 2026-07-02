@@ -8,6 +8,7 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💋</text></svg>"/>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://js.paystack.co/v1/inline.js"></script>
+<script src="https://download.agora.io/sdk/release/AgoraRTC_N-4.20.0.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -849,14 +850,18 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     </div>
   </div>
   <!-- Remote video -->
-  <div class="vc-remote">
-    <div class="vc-remote-ph">
+  <div class="vc-remote" id="vcRemote">
+    <video id="remoteVideo" autoplay playsinline style="width:100%;height:100%;object-fit:cover;display:none"></video>
+    <div class="vc-remote-ph" id="vcRemotePh">
       <span class="vc-em" id="vcRemoteEm">😍</span>
-      <div class="vc-ph-text">Live video from <span id="vcRemoteNm">Lerato</span></div>
+      <div class="vc-ph-text">Connecting to <span id="vcRemoteNm">match</span>…</div>
     </div>
   </div>
   <!-- Self PiP -->
-  <div class="vc-self">😊</div>
+  <div class="vc-self" id="vcSelfPip">
+    <video id="localVideo" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;border-radius:var(--r-lg);display:none"></video>
+    <span id="vcSelfEmoji">😊</span>
+  </div>
   <!-- In-call chat -->
   <div class="vc-chat" id="vcChat">
     <div class="vc-chat-msgs" id="vcChatMsgs"></div>
@@ -939,6 +944,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 const SUPABASE_URL  = 'https://wgolarfheiydwlqdqlrd.supabase.co';
 const SUPABASE_ANON = 'sb_publishable_LJqyRQsw7_ynmob3HhFUTg_lO0PGDwf';
 const PAYSTACK_KEY  = 'pk_live_YOUR_PAYSTACK_PUBLIC_KEY';
+const AGORA_APP_ID  = '666cf083cba94856b47b0284b823615f';
 const PAYMENTS_ENABLED = false; // flip to true once FEBA has its own Paystack account
 
 const { createClient } = window.supabase;
@@ -1290,16 +1296,89 @@ function escalateToVideo() {
   if (activeChat) openVC(activeChat.name, activeChat.emoji);
 }
 
-// ── VIDEO CALL ───────────────────────
-function openVC(name, emoji) {
-  document.getElementById('vcAv').textContent         = emoji;
-  document.getElementById('vcName').textContent       = name;
-  document.getElementById('vcRemoteEm').textContent   = emoji;
-  document.getElementById('vcRemoteNm').textContent   = name;
-  document.getElementById('vcDur').textContent        = 'Connecting…';
+// ── REAL AGORA VIDEO CALL ─────────────
+let agoraClient = null;
+let localTracks = { audio: null, video: null };
+let currentChannel = null;
+
+async function getAgoraToken(channelName, uid) {
+  try {
+    const res = await fetch('/api/agora-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelName, uid })
+    });
+    const data = await res.json();
+    return data.token;
+  } catch (err) {
+    console.error('Token fetch failed:', err);
+    return null;
+  }
+}
+
+async function openVC(name, emoji) {
+  document.getElementById('vcAv').textContent      = emoji;
+  document.getElementById('vcName').textContent    = name;
+  document.getElementById('vcRemoteEm').textContent = emoji;
+  document.getElementById('vcRemoteNm').textContent = name;
+  document.getElementById('vcDur').textContent     = 'Connecting…';
   document.getElementById('vcScr').classList.add('on');
   callSecs=0; clearInterval(callTimer);
-  setTimeout(() => {
+
+  // Generate unique channel name for this match
+  const channelName = 'feba-' + Date.now() + '-' + Math.random().toString(36).substr(2,6);
+  const uid = currentUser ? parseInt(currentUser.id.replace(/-/g,'').substr(0,8), 16) % 100000 : Math.floor(Math.random()*100000);
+  currentChannel = channelName;
+
+  try {
+    // Get secure token from our backend
+    const token = await getAgoraToken(channelName, uid);
+    if (!token) throw new Error('No token');
+
+    // Create Agora client
+    agoraClient = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
+
+    // Handle remote user joining
+    agoraClient.on('user-published', async (user, mediaType) => {
+      await agoraClient.subscribe(user, mediaType);
+      if (mediaType === 'video') {
+        const remoteVideo = document.getElementById('remoteVideo');
+        user.videoTrack.play(remoteVideo);
+        remoteVideo.style.display = 'block';
+        document.getElementById('vcRemotePh').style.display = 'none';
+      }
+      if (mediaType === 'audio') user.audioTrack.play();
+    });
+
+    agoraClient.on('user-unpublished', (user, mediaType) => {
+      if (mediaType === 'video') {
+        document.getElementById('remoteVideo').style.display = 'none';
+        document.getElementById('vcRemotePh').style.display = 'flex';
+      }
+    });
+
+    agoraClient.on('user-left', () => {
+      showToast('Match ended the call');
+      endVC();
+    });
+
+    // Join channel
+    await agoraClient.join(AGORA_APP_ID, channelName, token, uid);
+
+    // Get local camera + mic
+    localTracks.audio = await AgoraRTC.createMicrophoneAudioTrack();
+    localTracks.video = await AgoraRTC.createCameraVideoTrack();
+
+    // Show local video in PiP
+    const localVideo = document.getElementById('localVideo');
+    localTracks.video.play(localVideo);
+    localVideo.style.display = 'block';
+    document.getElementById('vcSelfEmoji').style.display = 'none';
+
+    // Publish local tracks
+    await agoraClient.publish([localTracks.audio, localTracks.video]);
+
+    // Start call timer
     document.getElementById('vcDur').textContent = '● Connected · 00:00';
     callTimer = setInterval(() => {
       callSecs++;
@@ -1307,12 +1386,40 @@ function openVC(name, emoji) {
       const s=String(callSecs%60).padStart(2,'0');
       document.getElementById('vcDur').textContent=`● Connected · ${m}:${s}`;
       if (callSecs%60===0 && !spendCoins(10)) endVC();
-    },1000);
-  }, 2000);
+    }, 1000);
+
+  } catch (err) {
+    console.error('Agora error:', err);
+    // Fallback to demo mode if Agora fails
+    showToast('Camera not available — demo mode');
+    document.getElementById('vcDur').textContent = '● Demo · 00:00';
+    callTimer = setInterval(() => {
+      callSecs++;
+      const m=String(Math.floor(callSecs/60)).padStart(2,'0');
+      const s=String(callSecs%60).padStart(2,'0');
+      document.getElementById('vcDur').textContent=`● Demo · ${m}:${s}`;
+    }, 1000);
+  }
 }
 
-function endVC() {
+async function endVC() {
   clearInterval(callTimer);
+
+  // Leave Agora channel and clean up
+  try {
+    if (localTracks.audio) { localTracks.audio.stop(); localTracks.audio.close(); localTracks.audio = null; }
+    if (localTracks.video) { localTracks.video.stop(); localTracks.video.close(); localTracks.video = null; }
+    if (agoraClient)       { await agoraClient.leave(); agoraClient = null; }
+  } catch(e) { console.log('Cleanup error:', e); }
+
+  // Reset video elements
+  const remoteVideo = document.getElementById('remoteVideo');
+  const localVideo  = document.getElementById('localVideo');
+  if (remoteVideo) remoteVideo.style.display = 'none';
+  if (localVideo)  localVideo.style.display  = 'none';
+  document.getElementById('vcRemotePh').style.display = 'flex';
+  document.getElementById('vcSelfEmoji').style.display = 'block';
+
   document.getElementById('vcScr').classList.remove('on');
   document.getElementById('vcChat').classList.remove('on');
   vcMuted=false; vcCamOff=false;
@@ -1322,9 +1429,26 @@ function endVC() {
   });
 }
 
-function vcToggle(type) {
-  if (type==='mute') { vcMuted=!vcMuted; const b=document.getElementById('vcMute'); b.textContent=vcMuted?'🔇':'🎤'; b.classList.toggle('off',vcMuted); }
-  else               { vcCamOff=!vcCamOff; const b=document.getElementById('vcCam'); b.textContent=vcCamOff?'🚫':'📷'; b.classList.toggle('off',vcCamOff); }
+async function vcToggle(type) {
+  if (type==='mute') {
+    vcMuted=!vcMuted;
+    const b=document.getElementById('vcMute');
+    b.textContent=vcMuted?'🔇':'🎤';
+    b.classList.toggle('off',vcMuted);
+    if (localTracks.audio) {
+      if (vcMuted) localTracks.audio.setMuted(true);
+      else         localTracks.audio.setMuted(false);
+    }
+  } else {
+    vcCamOff=!vcCamOff;
+    const b=document.getElementById('vcCam');
+    b.textContent=vcCamOff?'🚫':'📷';
+    b.classList.toggle('off',vcCamOff);
+    if (localTracks.video) {
+      if (vcCamOff) localTracks.video.setMuted(true);
+      else          localTracks.video.setMuted(false);
+    }
+  }
 }
 
 function toggleVcChat() { document.getElementById('vcChat').classList.toggle('on'); }
