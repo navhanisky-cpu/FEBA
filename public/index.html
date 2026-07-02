@@ -833,12 +833,6 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
 
 <!-- Video Call Screen -->
 <div class="vc-scr" id="vcScr">
-  <!-- Blurred start overlay -->
-  <div class="vc-blur-overlay" id="vcBlur" onclick="revealVideo()">
-    <div class="vc-blur-emoji">👀</div>
-    <div class="vc-blur-text">Chat starts blurred for your safety<br/>Tap to reveal when you're ready</div>
-    <button class="vc-blur-tap">Tap to start</button>
-  </div>
   <!-- Top bar -->
   <div class="vc-top">
     <div class="vc-user">
@@ -1303,7 +1297,6 @@ function openVC(name, emoji) {
   document.getElementById('vcRemoteEm').textContent   = emoji;
   document.getElementById('vcRemoteNm').textContent   = name;
   document.getElementById('vcDur').textContent        = 'Connecting…';
-  document.getElementById('vcBlur').classList.remove('gone');
   document.getElementById('vcScr').classList.add('on');
   callSecs=0; clearInterval(callTimer);
   setTimeout(() => {
@@ -1316,10 +1309,6 @@ function openVC(name, emoji) {
       if (callSecs%60===0 && !spendCoins(10)) endVC();
     },1000);
   }, 2000);
-}
-
-function revealVideo() {
-  document.getElementById('vcBlur').classList.add('gone');
 }
 
 function endVC() {
