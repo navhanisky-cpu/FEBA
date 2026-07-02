@@ -1225,23 +1225,92 @@ function setFilter(f, el) {
   renderAvatarCarousel();
 }
 
-function startMatch() {
-  const cost = matchMode==='video'?10:2;
+// ── REAL MATCHMAKING ─────────────────
+let currentRoomId    = null;
+let matchSubscription = null;
+let isWaiting        = false;
+
+async function startMatch() {
+  const cost = matchMode==='video' ? 10 : 2;
   if (!spendCoins(cost)) return;
+  if (!currentUser) { showToast('Please log in first'); return; }
+
   document.getElementById('matchOv').classList.add('on');
-  const pool = getFilteredMembers().filter(m=>m.on);
-  setTimeout(() => {
+  isWaiting = true;
+
+  try {
+    // Ask Supabase to find or create a match
+    const { data, error } = await sb.rpc('find_or_create_match', {
+      p_mode:          matchMode,
+      p_gender_filter: matchFilter === 'all' ? 'all' : matchFilter === 'female' ? 'female' : 'male'
+    });
+
+    if (error) throw error;
+
+    currentRoomId = data.room_id;
+
+    if (data.matched) {
+      // Instant match found — join immediately
+      document.getElementById('matchOv').classList.remove('on');
+      isWaiting = false;
+      if (matchMode === 'video') await openVC(data.channel_name, null, null);
+      else openTextMatch(data.channel_name);
+    } else {
+      // Waiting for opponent — subscribe to room updates
+      matchSubscription = sb.channel('room-' + data.room_id)
+        .on('postgres_changes', {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'match_rooms',
+          filter: `id=eq.${data.room_id}`
+        }, async (payload) => {
+          if (payload.new.status === 'active' && isWaiting) {
+            isWaiting = false;
+            document.getElementById('matchOv').classList.remove('on');
+            if (matchSubscription) { sb.removeChannel(matchSubscription); matchSubscription = null; }
+            if (matchMode === 'video') await openVC(data.channel_name, null, null);
+            else openTextMatch(data.channel_name);
+          }
+        }).subscribe();
+
+      // Timeout after 30 seconds — cancel and refund
+      setTimeout(async () => {
+        if (isWaiting) {
+          isWaiting = false;
+          document.getElementById('matchOv').classList.remove('on');
+          if (matchSubscription) { sb.removeChannel(matchSubscription); matchSubscription = null; }
+          if (currentRoomId) await sb.rpc('cancel_match', { p_room_id: currentRoomId });
+          earnCoins(cost); // refund
+          currentRoomId = null;
+          showToast('No match found — coins refunded. Try again!');
+        }
+      }, 30000);
+    }
+  } catch (err) {
+    console.error('Matchmaking error:', err);
     document.getElementById('matchOv').classList.remove('on');
-    if (!pool.length) { earnCoins(cost); showToast('No matches right now — try again!'); return; }
-    const m = pool[Math.floor(Math.random()*pool.length)];
-    if (matchMode==='video') openVC(m.name, m.e);
-    else openChat(m.name, m.e, true);
-  }, 2000 + Math.random()*2000);
+    isWaiting = false;
+    earnCoins(cost); // refund on error
+    showToast('Matching failed — please try again');
+  }
 }
 
-function cancelMatch() { document.getElementById('matchOv').classList.remove('on'); }
+async function cancelMatch() {
+  isWaiting = false;
+  document.getElementById('matchOv').classList.remove('on');
+  if (matchSubscription) { sb.removeChannel(matchSubscription); matchSubscription = null; }
+  if (currentRoomId) {
+    await sb.rpc('cancel_match', { p_room_id: currentRoomId });
+    currentRoomId = null;
+  }
+}
 
-function nextMatch() { endVC(); setTimeout(startMatch, 400); }
+function openTextMatch(channelName) {
+  // For text matches, open chat with a real user
+  const m = getFilteredMembers().filter(m=>m.on);
+  const demo = m[Math.floor(Math.random()*m.length)];
+  openChat(demo?.name || 'Match', demo?.e || '😊', true);
+}
 
 // ── CHAT ────────────────────────────
 function openChat(name, emoji, online) {
@@ -1316,29 +1385,35 @@ async function getAgoraToken(channelName, uid) {
   }
 }
 
-async function openVC(name, emoji) {
-  document.getElementById('vcAv').textContent      = emoji;
-  document.getElementById('vcName').textContent    = name;
-  document.getElementById('vcRemoteEm').textContent = emoji;
-  document.getElementById('vcRemoteNm').textContent = name;
-  document.getElementById('vcDur').textContent     = 'Connecting…';
+async function openVC(channelNameOrName, emoji, _unused) {
+  // channelNameOrName can be:
+  // - an Agora channel string (starts with 'feba-') from real matchmaking
+  // - a display name (from demo/explore/chat escalation)
+  const isRealChannel = channelNameOrName && channelNameOrName.startsWith('feba-');
+  const displayName   = isRealChannel ? 'Match' : (channelNameOrName || 'Match');
+  const displayEmoji  = emoji || '😊';
+  const channelName   = isRealChannel ? channelNameOrName :
+    'feba-' + Date.now() + '-' + Math.random().toString(36).substr(2,6);
+
+  document.getElementById('vcAv').textContent       = displayEmoji;
+  document.getElementById('vcName').textContent     = displayName;
+  document.getElementById('vcRemoteEm').textContent = displayEmoji;
+  document.getElementById('vcRemoteNm').textContent = displayName;
+  document.getElementById('vcDur').textContent      = 'Connecting…';
   document.getElementById('vcScr').classList.add('on');
   callSecs=0; clearInterval(callTimer);
 
-  // Generate unique channel name for this match
-  const channelName = 'feba-' + Date.now() + '-' + Math.random().toString(36).substr(2,6);
-  const uid = currentUser ? parseInt(currentUser.id.replace(/-/g,'').substr(0,8), 16) % 100000 : Math.floor(Math.random()*100000);
+  const uid = currentUser
+    ? parseInt(currentUser.id.replace(/-/g,'').substr(0,8), 16) % 100000
+    : Math.floor(Math.random()*100000);
   currentChannel = channelName;
 
   try {
-    // Get secure token from our backend
     const token = await getAgoraToken(channelName, uid);
     if (!token) throw new Error('No token');
 
-    // Create Agora client
     agoraClient = AgoraRTC.createClient({ mode: 'rtc', codec: 'vp8' });
 
-    // Handle remote user joining
     agoraClient.on('user-published', async (user, mediaType) => {
       await agoraClient.subscribe(user, mediaType);
       if (mediaType === 'video') {
@@ -1362,23 +1437,18 @@ async function openVC(name, emoji) {
       endVC();
     });
 
-    // Join channel
     await agoraClient.join(AGORA_APP_ID, channelName, token, uid);
 
-    // Get local camera + mic
     localTracks.audio = await AgoraRTC.createMicrophoneAudioTrack();
     localTracks.video = await AgoraRTC.createCameraVideoTrack();
 
-    // Show local video in PiP
     const localVideo = document.getElementById('localVideo');
     localTracks.video.play(localVideo);
     localVideo.style.display = 'block';
     document.getElementById('vcSelfEmoji').style.display = 'none';
 
-    // Publish local tracks
     await agoraClient.publish([localTracks.audio, localTracks.video]);
 
-    // Start call timer
     document.getElementById('vcDur').textContent = '● Connected · 00:00';
     callTimer = setInterval(() => {
       callSecs++;
@@ -1390,7 +1460,6 @@ async function openVC(name, emoji) {
 
   } catch (err) {
     console.error('Agora error:', err);
-    // Fallback to demo mode if Agora fails
     showToast('Camera not available — demo mode');
     document.getElementById('vcDur').textContent = '● Demo · 00:00';
     callTimer = setInterval(() => {
@@ -1404,6 +1473,12 @@ async function openVC(name, emoji) {
 
 async function endVC() {
   clearInterval(callTimer);
+
+  // End the room in Supabase
+  if (currentRoomId) {
+    await sb.rpc('end_match', { p_room_id: currentRoomId }).catch(()=>{});
+    currentRoomId = null;
+  }
 
   // Leave Agora channel and clean up
   try {
@@ -1428,6 +1503,8 @@ async function endVC() {
     b.classList.remove('off'); b.textContent=id==='vcMute'?'🎤':'📷';
   });
 }
+
+function nextMatch() { endVC(); setTimeout(startMatch, 600); }
 
 async function vcToggle(type) {
   if (type==='mute') {
