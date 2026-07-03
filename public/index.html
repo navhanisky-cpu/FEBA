@@ -1022,11 +1022,6 @@ async function loadOnlineUsers() {
     .subscribe();
 }
 
-function getFilteredMembers() {
-  if (!ONLINE_USERS.length) return [];
-  return ONLINE_USERS.filter(u => u.on);
-}
-
 const MEMBERS = [
   {e:'👸',name:'Amahle',age:24,loc:'South Africa',on:true, gender:'woman',verified:true },
   {e:'😍',name:'Lerato',age:22,loc:'South Africa',on:true, gender:'woman',verified:true },
@@ -1194,6 +1189,9 @@ async function onLogin(user) {
   updateCoinUI();
   updateMeProfile(user, profile);
 
+  // Load real online opposite-gender users
+  await loadOnlineUsers();
+
   // Show women a "waiting" message on Match tab instead of Start button
   if (currentGender === 'woman') {
     document.querySelector('.btn-start').style.display = 'none';
@@ -1331,11 +1329,12 @@ function renderMsgList() {
 
 // ── MATCH ────────────────────────────
 function getFilteredMembers() {
-  // Always match opposite gender — no manual filter
-  if (!currentGender) return MEMBERS;
+  // Use real online users from DB if available, otherwise fall back to demo data
+  const pool = ONLINE_USERS.length > 0 ? ONLINE_USERS : MEMBERS;
+  if (!currentGender) return pool;
   return currentGender === 'man'
-    ? MEMBERS.filter(m => m.gender === 'woman')
-    : MEMBERS.filter(m => m.gender === 'man');
+    ? pool.filter(m => m.gender === 'woman')
+    : pool.filter(m => m.gender === 'man');
 }
 
 function setMode(mode) {
