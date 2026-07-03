@@ -1238,6 +1238,32 @@ async function onLogin(user) {
     sb.rpc('set_user_offline').then().catch(()=>{});
   });
 
+  // Global incoming message listener
+  if (currentUser) {
+    sb.channel('global-msgs-' + currentUser.id)
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'messages',
+        filter: `to_user=eq.${currentUser.id}`
+      }, async p => {
+        // If chat is not open with this sender, show notification
+        if (!activeChat || activeChat.userId !== p.new.from_user) {
+          // Get sender profile
+          const { data: sender } = await sb.from('profiles')
+            .select('username, gender')
+            .eq('id', p.new.from_user).maybeSingle();
+          const senderName = sender?.username ? '@' + sender.username : 'Someone';
+          showToast(`💬 ${senderName}: ${p.new.body.substring(0, 30)}`);
+          // Update message badge
+          const badge = document.getElementById('msgBadge');
+          if (badge) {
+            const count = parseInt(badge.textContent || '0') + 1;
+            badge.style.display = 'block';
+            badge.textContent = count;
+          }
+        }
+      }).subscribe();
+  }
+
   // Subscribe to friend requests
   subscribeFriendRequests();
 
@@ -1322,7 +1348,7 @@ function renderMsgList() {
   if (!el) return;
   const online = getFilteredMembers().filter(m=>m.on);
   el.innerHTML = online.map(m => `
-    <div class="msg-row" onclick="openChat('${m.name}','${m.e}',true)">
+    <div class="msg-row" onclick="openChat('${m.name}','${m.e}',true,'${m.id || ''}')">
       <div class="mr-av">${m.e}<div class="mr-online"></div></div>
       <div class="mr-info">
         <div class="mr-top">
@@ -1465,46 +1491,75 @@ async function cancelMatch() {
   }
 }
 
-function openTextMatch(channelName) {
+function openTextMatch(channelName, matchedUserId = null) {
   const pool = getFilteredMembers().filter(m => m.on);
   const demo = pool[Math.floor(Math.random() * pool.length)];
-  openChat(demo?.name || 'Match', demo?.e || '😊', true);
+  const userId = matchedUserId || demo?.id || null;
+  openChat(demo?.name || 'Match', demo?.e || '😊', true, userId);
 }
 
 // ── CHAT ────────────────────────────
-function openChat(name, emoji, online) {
-  activeChat = { name, emoji, online };
+let chatSubscription = null;
+
+function openChat(name, emoji, online, userId = null) {
+  activeChat = { name, emoji, online, userId };
   document.getElementById('ctAv').textContent    = emoji;
   document.getElementById('ctName').textContent  = name;
   document.getElementById('ctStat').textContent  = online ? '● Online' : '○ Offline';
   const msgs = document.getElementById('chatMsgs');
   msgs.innerHTML = `<div class="bubble sys">You matched with ${name}! Say hello 👋</div>`;
   document.getElementById('chatScr').classList.add('on');
-  setTimeout(() => {
-    addBubble('in', `Hey! 😊 I'm ${name}. Nice to meet you!`);
-  }, 1200);
-  // Realtime subscription
-  if (currentUser) {
-    sb.channel('chat').on('postgres_changes',
-      {event:'INSERT',schema:'public',table:'messages',filter:`to_user=eq.${currentUser.id}`},
-      p => addBubble('in', p.new.body)
-    ).subscribe();
+  document.getElementById('addFriendBtn').textContent = '➕ Follow';
+
+  // Unsubscribe from previous chat channel
+  if (chatSubscription) { sb.removeChannel(chatSubscription); chatSubscription = null; }
+
+  // Subscribe to incoming messages for this conversation
+  if (currentUser && userId) {
+    chatSubscription = sb.channel('chat-' + currentUser.id)
+      .on('postgres_changes', {
+        event: 'INSERT', schema: 'public', table: 'messages',
+        filter: `to_user=eq.${currentUser.id}`
+      }, p => {
+        // Only show if from current chat partner
+        if (p.new.from_user === userId) {
+          document.getElementById('typingEl').classList.remove('on');
+          addBubble('in', p.new.body);
+        }
+      }).subscribe();
   }
 }
 
-function closeChat() { document.getElementById('chatScr').classList.remove('on'); }
+function closeChat() {
+  document.getElementById('chatScr').classList.remove('on');
+  if (chatSubscription) { sb.removeChannel(chatSubscription); chatSubscription = null; }
+}
 
-function sendMsg() {
-  const inp  = document.getElementById('chatInp');
-  const txt  = inp.value.trim(); if (!txt) return;
+async function sendMsg() {
+  const inp = document.getElementById('chatInp');
+  const txt = inp.value.trim(); if (!txt) return;
   addBubble('out', txt); inp.value='';
-  document.getElementById('typingEl').classList.add('on');
   const msgs = document.getElementById('chatMsgs');
   msgs.scrollTop = msgs.scrollHeight;
-  setTimeout(() => {
-    document.getElementById('typingEl').classList.remove('on');
-    addBubble('in', CHAT_REPLIES[Math.floor(Math.random()*CHAT_REPLIES.length)]);
-  }, 900 + Math.random()*800);
+
+  // Send real message via Supabase if we have a real user ID
+  if (currentUser && activeChat?.userId) {
+    const { error } = await sb.from('messages').insert({
+      from_user: currentUser.id,
+      to_user:   activeChat.userId,
+      body:      txt
+    });
+    if (error) console.error('Message send error:', error);
+    // Show typing indicator — will disappear when real reply arrives
+    document.getElementById('typingEl').classList.add('on');
+  } else {
+    // Demo mode — show fake reply
+    document.getElementById('typingEl').classList.add('on');
+    setTimeout(() => {
+      document.getElementById('typingEl').classList.remove('on');
+      addBubble('in', CHAT_REPLIES[Math.floor(Math.random()*CHAT_REPLIES.length)]);
+    }, 900 + Math.random()*800);
+  }
 }
 
 function addBubble(type, text) {
