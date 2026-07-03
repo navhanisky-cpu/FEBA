@@ -1292,7 +1292,8 @@ function goTab(id) {
 function renderExploreGrid() {
   const el = document.getElementById('exploreGrid');
   if (!el) return;
-  el.innerHTML = MEMBERS.map((m,i) => `
+  const pool = getFilteredMembers();
+  el.innerHTML = pool.map((m,i) => `
     <div class="exp-card" onclick="openChat('${m.name}','${m.e}',${m.on})">
       <div class="exp-av">${m.e}</div>
       ${i===0?'<div class="exp-live">LIVE</div>':''}
@@ -1309,7 +1310,7 @@ function renderExploreGrid() {
 function renderMsgList() {
   const el = document.getElementById('msgList');
   if (!el) return;
-  const online = MEMBERS.filter(m=>m.on);
+  const online = getFilteredMembers().filter(m=>m.on);
   el.innerHTML = online.map(m => `
     <div class="msg-row" onclick="openChat('${m.name}','${m.e}',true)">
       <div class="mr-av">${m.e}<div class="mr-online"></div></div>
@@ -1322,7 +1323,6 @@ function renderMsgList() {
       </div>
       <div class="mr-unread-dot"></div>
     </div>`).join('');
-  // Show badge
   const badge = document.getElementById('msgBadge');
   if (badge) { badge.style.display='block'; badge.textContent=online.length; }
 }
