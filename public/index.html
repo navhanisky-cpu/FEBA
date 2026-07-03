@@ -1209,6 +1209,16 @@ async function onLogin(user) {
   // Mark user as online
   try { await sb.rpc('set_user_online') } catch(e) {};
 
+  // Women automatically enter a waiting room so men can find them
+  if (currentGender === 'woman') {
+    try {
+      await sb.rpc('find_or_create_match', {
+        p_mode: 'video',
+        p_gender_filter: 'female'
+      });
+    } catch(e) { console.log('Auto-room:', e); }
+  }
+
   // Update online counter + avatar carousel with real data
   if (currentGender === 'man') {
     const { data: women } = await sb.rpc('get_available_women', { p_limit: 100 });
