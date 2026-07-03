@@ -972,18 +972,54 @@ const { createClient } = window.supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 
 // ── DEMO DATA ──────────────────────
-const MEMBERS = [
-  {e:'👸',name:'Amahle',age:24,loc:'South Africa',on:true, gender:'woman',verified:true },
-  {e:'😍',name:'Lerato',age:22,loc:'South Africa',on:true, gender:'woman',verified:true },
-  {e:'🌟',name:'Priya', age:26,loc:'India',       on:true, gender:'woman',verified:false},
-  {e:'💃',name:'Sofia', age:23,loc:'Brazil',      on:false,gender:'woman',verified:true },
-  {e:'🌺',name:'Yuki',  age:21,loc:'Japan',       on:true, gender:'woman',verified:true },
-  {e:'😎',name:'James', age:28,loc:'USA',         on:true, gender:'man',  verified:false},
-  {e:'🦋',name:'Fatima',age:25,loc:'Nigeria',     on:true, gender:'woman',verified:true },
-  {e:'🔥',name:'Carlos',age:30,loc:'Mexico',      on:false,gender:'man',  verified:false},
-  {e:'💫',name:'Aisha', age:22,loc:'Kenya',       on:true, gender:'woman',verified:true },
-  {e:'⭐',name:'Ming',  age:27,loc:'China',       on:true, gender:'woman',verified:false},
-];
+// Real online users loaded from Supabase
+let ONLINE_USERS = []; // populated after login
+
+async function loadOnlineUsers() {
+  if (!currentUser || !currentGender) return;
+
+  // Load opposite gender online users
+  const targetGender = currentGender === 'man' ? 'woman' : 'man';
+  const { data, error } = await sb.from('profiles')
+    .select('id, username, gender, age, avatar_url, is_online, verification_status, nyobana_score')
+    .eq('is_online', true)
+    .eq('gender', targetGender)
+    .neq('id', currentUser.id)
+    .order('nyobana_score', { ascending: false })
+    .limit(20);
+
+  if (error) { console.error('Load users error:', error); return; }
+
+  ONLINE_USERS = (data || []).map(u => ({
+    id:       u.id,
+    e:        u.gender === 'woman' ? '👸' : '😎',
+    name:     u.username ? '@' + u.username : 'User',
+    age:      u.age || '?',
+    loc:      'Online',
+    on:       u.is_online,
+    gender:   u.gender,
+    verified: u.verification_status === 'verified',
+    score:    u.nyobana_score || 0,
+  }));
+
+  // Re-render all lists with real data
+  renderMsgList();
+  renderExploreGrid();
+  renderAvatarCarousel();
+
+  // Subscribe to online status changes
+  sb.channel('online-users')
+    .on('postgres_changes', {
+      event: '*', schema: 'public', table: 'profiles',
+      filter: `gender=eq.${targetGender}`
+    }, () => loadOnlineUsers())
+    .subscribe();
+}
+
+function getFilteredMembers() {
+  if (!ONLINE_USERS.length) return [];
+  return ONLINE_USERS.filter(u => u.on);
+}
 
 const GIFTS_DATA = [
   {e:'❤️',name:'Heart',  cost:10 },
@@ -1110,6 +1146,14 @@ async function onLogin(user) {
   currentUser = user;
   currentGender = user.user_metadata?.gender || null;
 
+  // Mark user as online in Supabase
+  await sb.from('profiles').update({ is_online: true }).eq('id', user.id);
+
+  // Set offline when tab/app closes
+  window.addEventListener('beforeunload', () => {
+    sb.from('profiles').update({ is_online: false }).eq('id', user.id);
+  });
+
   // Fetch wallet
   const { data:wallet } = await sb.from('coin_wallets').select('balance').eq('user_id',user.id).maybeSingle();
   userCoins = wallet?.balance || 0;
@@ -1131,6 +1175,9 @@ async function onLogin(user) {
   updateCoinUI();
   updateMeProfile(user, profile);
 
+  // Load real online users from Supabase
+  await loadOnlineUsers();
+
   // Show women a "waiting" message on Match tab instead of Start button
   if (currentGender === 'woman') {
     document.querySelector('.btn-start').style.display = 'none';
@@ -1144,6 +1191,28 @@ async function onLogin(user) {
       <span style="color:var(--purple);font-weight:600">Accept incoming calls to earn coins from gifts.</span>`;
     matchWrap.appendChild(womenMsg);
   }
+
+  // Mark user as online
+  await sb.rpc('set_user_online').catch(() => {});
+
+  // Update online counter + avatar carousel with real data
+  if (currentGender === 'man') {
+    const { data: women } = await sb.rpc('get_available_women', { p_limit: 100 });
+    const count = women?.length || 0;
+    const el = document.getElementById('onlineCount');
+    if (el) el.textContent = count > 0 ? count + ' women online' : 'No women online yet';
+    await renderAvatarCarousel();
+  }
+
+  // Heartbeat — keep online status fresh every 30 seconds
+  setInterval(() => {
+    if (currentUser) sb.rpc('set_user_online').catch(() => {});
+  }, 30000);
+
+  // Mark offline when page/app closes
+  window.addEventListener('beforeunload', () => {
+    navigator.sendBeacon && sb.rpc('set_user_offline').catch(() => {});
+  });
 
   // Subscribe to friend requests
   subscribeFriendRequests();
@@ -1170,6 +1239,7 @@ function onLogout() {
 }
 
 async function doLogout() {
+  await sb.rpc('set_user_offline').catch(() => {});
   await sb.auth.signOut();
   showToast('Logged out. See you soon! 👋');
 }
@@ -1259,9 +1329,24 @@ function setMode(mode) {
   document.getElementById('startCost').textContent = mode==='video' ? '3' : '2';
 }
 
-function renderAvatarCarousel() {
+async function renderAvatarCarousel() {
   const el = document.getElementById('avCarousel');
   if (!el) return;
+
+  // If logged in as man, show real online women from DB
+  if (currentUser && currentGender === 'man') {
+    const { data: women } = await sb.rpc('get_available_women', { p_limit: 5 });
+    if (women && women.length > 0) {
+      const center = Math.floor(women.length / 2);
+      el.innerHTML = women.map((w, i) => `
+        <div class="av-c ${i===center?'center':''}" title="${w.username || 'Online'}">
+          ${w.avatar_url ? `<img src="${w.avatar_url}" style="width:100%;height:100%;border-radius:50%;object-fit:cover"/>` : '👸'}
+        </div>`).join('');
+      return;
+    }
+  }
+
+  // Fallback to demo avatars
   const pool = getFilteredMembers().filter(m=>m.on).slice(0,5);
   const center = Math.floor(pool.length/2);
   el.innerHTML = pool.map((m,i)=>`
