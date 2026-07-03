@@ -1256,29 +1256,16 @@ function setMode(mode) {
   matchMode = mode;
   document.getElementById('modeVideo').classList.toggle('on', mode==='video');
   document.getElementById('modeText').classList.toggle('on',  mode==='text');
-  // Video: 3 coins for first 15s, then 10/min. Text: 2 coins/min
   document.getElementById('startCost').textContent = mode==='video' ? '3' : '2';
 }
+
+function renderAvatarCarousel() {
   const el = document.getElementById('avCarousel');
   if (!el) return;
   const pool = getFilteredMembers().filter(m=>m.on).slice(0,5);
   const center = Math.floor(pool.length/2);
   el.innerHTML = pool.map((m,i)=>`
     <div class="av-c ${i===center?'center':''}">${m.e}</div>`).join('');
-}
-
-function setMode(mode) {
-  matchMode = mode;
-  document.getElementById('modeVideo').classList.toggle('on', mode==='video');
-  document.getElementById('modeText').classList.toggle('on',  mode==='text');
-  document.getElementById('startCost').textContent = mode==='video'?'10':'2';
-}
-
-function setFilter(f, el) {
-  matchFilter = f;
-  document.querySelectorAll('.filter-chip').forEach(c=>c.classList.remove('on'));
-  el.classList.add('on');
-  renderAvatarCarousel();
 }
 
 // ── REAL MATCHMAKING ─────────────────
