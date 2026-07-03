@@ -1441,8 +1441,8 @@ async function startMatch() {
     if (data.matched) {
       document.getElementById('matchOv').classList.remove('on');
       isWaiting = false;
-      if (matchMode === 'video') await openVC(data.channel_name, null, null);
-      else openTextMatch(data.channel_name);
+      if (matchMode === 'video') await openVC(data.channel_name, data.partner_id, null);
+      else openTextMatch(data.channel_name, data.partner_id);
     } else {
       // Waiting — subscribe for a match
       matchSubscription = sb.channel('room-' + data.room_id)
@@ -1454,8 +1454,8 @@ async function startMatch() {
             isWaiting = false;
             document.getElementById('matchOv').classList.remove('on');
             if (matchSubscription) { sb.removeChannel(matchSubscription); matchSubscription = null; }
-            if (matchMode === 'video') await openVC(data.channel_name, null, null);
-            else openTextMatch(data.channel_name);
+            if (matchMode === 'video') await openVC(data.channel_name, payload.new.user_b, null);
+            else openTextMatch(data.channel_name, payload.new.user_b);
           }
         }).subscribe();
 
@@ -1491,11 +1491,28 @@ async function cancelMatch() {
   }
 }
 
-function openTextMatch(channelName, matchedUserId = null) {
+async function openTextMatch(channelName, matchedUserId = null) {
+  if (matchedUserId) {
+    // Real match — look up the actual partner's profile
+    const { data: profile, error } = await sb
+      .from('profiles')
+      .select('username, avatar_url')
+      .eq('id', matchedUserId)
+      .single();
+
+    if (!error && profile) {
+      openChat('@' + (profile.username || 'user'), profile.avatar_url || '😊', true, matchedUserId);
+      return;
+    }
+    // Profile lookup failed — still route messages correctly, just with a fallback label
+    openChat('Match', '😊', true, matchedUserId);
+    return;
+  }
+
+  // No real partner id — demo/fallback mode only
   const pool = getFilteredMembers().filter(m => m.on);
   const demo = pool[Math.floor(Math.random() * pool.length)];
-  const userId = matchedUserId || demo?.id || null;
-  openChat(demo?.name || 'Match', demo?.e || '😊', true, userId);
+  openChat(demo?.name || 'Match', demo?.e || '😊', true, demo?.id || null);
 }
 
 // ── CHAT ────────────────────────────
