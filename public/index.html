@@ -969,7 +969,13 @@ const AGORA_APP_ID  = '666cf083cba94856b47b0284b823615f';
 const PAYMENTS_ENABLED = false; // flip to true once FEBA has its own Paystack account
 
 const { createClient } = window.supabase;
-const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON, {
+  auth: {
+    storage: window.localStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+  }
+});
 
 // ── DEMO DATA ──────────────────────
 // Real online users loaded from Supabase
@@ -1020,6 +1026,19 @@ function getFilteredMembers() {
   if (!ONLINE_USERS.length) return [];
   return ONLINE_USERS.filter(u => u.on);
 }
+
+const MEMBERS = [
+  {e:'👸',name:'Amahle',age:24,loc:'South Africa',on:true, gender:'woman',verified:true },
+  {e:'😍',name:'Lerato',age:22,loc:'South Africa',on:true, gender:'woman',verified:true },
+  {e:'🌟',name:'Priya', age:26,loc:'India',       on:true, gender:'woman',verified:false},
+  {e:'💃',name:'Sofia', age:23,loc:'Brazil',      on:false,gender:'woman',verified:true },
+  {e:'🌺',name:'Yuki',  age:21,loc:'Japan',       on:true, gender:'woman',verified:true },
+  {e:'😎',name:'James', age:28,loc:'USA',         on:true, gender:'man',  verified:false},
+  {e:'🦋',name:'Fatima',age:25,loc:'Nigeria',     on:true, gender:'woman',verified:true },
+  {e:'🔥',name:'Carlos',age:30,loc:'Mexico',      on:false,gender:'man',  verified:false},
+  {e:'💫',name:'Aisha', age:22,loc:'Kenya',       on:true, gender:'woman',verified:true },
+  {e:'⭐',name:'Ming',  age:27,loc:'China',       on:true, gender:'woman',verified:false},
+];
 
 const GIFTS_DATA = [
   {e:'❤️',name:'Heart',  cost:10 },
