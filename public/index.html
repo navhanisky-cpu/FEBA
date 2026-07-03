@@ -755,7 +755,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
       <div class="me-verified-badge" id="meVBadge" style="display:none">✅</div>
     </div>
     <div class="me-name" id="meName">Your Name</div>
-    <div class="me-id" id="meEmail">Loading…</div>
+    <div class="me-id" id="meEmail" style="display:none"></div>
   </div>
   <div class="me-body">
     <div class="me-stats">
@@ -1178,7 +1178,7 @@ function updateMeProfile(user, profile) {
   const username    = profile?.username ? '@' + profile.username : null;
   const displayName = username || user.user_metadata?.username || user.email?.split('@')[0] || 'You';
   document.getElementById('meName').textContent    = displayName;
-  document.getElementById('meEmail').textContent   = user.email || '';
+  document.getElementById("meEmail").style.display = "none";
   document.getElementById('ms-coins').textContent  = userCoins.toLocaleString();
 }
 
