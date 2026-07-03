@@ -1209,7 +1209,7 @@ async function onLogin(user) {
   }
 
   // Mark user as online
-  await sb.rpc('set_user_online').catch(() => {});
+  try { await sb.rpc('set_user_online') } catch(e) {};
 
   // Update online counter + avatar carousel with real data
   if (currentGender === 'man') {
@@ -1222,12 +1222,12 @@ async function onLogin(user) {
 
   // Heartbeat — keep online status fresh every 30 seconds
   setInterval(() => {
-    if (currentUser) sb.rpc('set_user_online').catch(() => {});
+    if (currentUser) sb.rpc('set_user_online').then().catch(()=>{});
   }, 30000);
 
   // Mark offline when page/app closes
   window.addEventListener('beforeunload', () => {
-    navigator.sendBeacon && sb.rpc('set_user_offline').catch(() => {});
+    sb.rpc('set_user_offline').then().catch(()=>{});
   });
 
   // Subscribe to friend requests
@@ -1255,7 +1255,7 @@ function onLogout() {
 }
 
 async function doLogout() {
-  await sb.rpc('set_user_offline').catch(() => {});
+  try { await sb.rpc('set_user_offline') } catch(e) {};
   await sb.auth.signOut();
   showToast('Logged out. See you soon! 👋');
 }
