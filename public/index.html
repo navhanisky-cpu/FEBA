@@ -683,7 +683,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="match-map"></div>
     <div class="online-counter">
       <span class="oc-dot"></span>
-      <span id="onlineCount">247</span> people online now
+      <span id="onlineCount">Loading…</span>
     </div>
     <div class="av-carousel" id="avCarousel"></div>
     <div class="mode-row">
@@ -1012,6 +1012,7 @@ async function loadOnlineUsers() {
   renderMsgList();
   renderExploreGrid();
   renderAvatarCarousel();
+  updateOnlineCount();
 
   // Subscribe to online status changes
   sb.channel('online-users')
@@ -1020,6 +1021,14 @@ async function loadOnlineUsers() {
       filter: `gender=eq.${targetGender}`
     }, () => loadOnlineUsers())
     .subscribe();
+}
+
+function updateOnlineCount() {
+  const el = document.getElementById('onlineCount');
+  if (!el) return;
+  const count = ONLINE_USERS.length;
+  const label = currentGender === 'man' ? 'women' : 'men';
+  el.textContent = count > 0 ? `${count} ${label} online` : `No ${label} online yet`;
 }
 
 const GIFTS_DATA = [
@@ -1073,12 +1082,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (ev === 'SIGNED_OUT') onLogout();
   });
 
-  // Simulate live online count fluctuation
-  setInterval(() => {
-    const n = 200 + Math.floor(Math.random() * 100);
-    const el = document.getElementById('onlineCount');
-    if (el) el.textContent = n.toLocaleString();
-  }, 8000);
+  // (Removed: fake simulated online-count fluctuation.
+  // The real count is set in onLogin() and kept live via realtime subscriptions below.)
 });
 
 // ── AUTH ─────────────────────────────
@@ -1199,14 +1204,8 @@ async function onLogin(user) {
     } catch(e) { console.log('Auto-room:', e); }
   }
 
-  // Update online counter + avatar carousel with real data
-  if (currentGender === 'man') {
-    const { data: women } = await sb.rpc('get_available_women', { p_limit: 100 });
-    const count = women?.length || 0;
-    const el = document.getElementById('onlineCount');
-    if (el) el.textContent = count > 0 ? count + ' women online' : 'No women online yet';
-    await renderAvatarCarousel();
-  }
+  // Avatar carousel (real online users only, from ONLINE_USERS)
+  if (currentGender === 'man') await renderAvatarCarousel();
 
   // Heartbeat — keep online status fresh every 30 seconds
   setInterval(() => {
@@ -1253,8 +1252,30 @@ async function onLogin(user) {
       p => { userCoins=p.new.balance; updateCoinUI(); }
     ).subscribe();
 
-  // Real incoming calls arrive via the actual call-signaling/matchmaking
-  // system elsewhere — no fake/simulated calls here.
+  // Real incoming calls — someone else's escalateToVideo() inserts a row here
+  sb.channel('incoming-calls-' + user.id)
+    .on('postgres_changes', {
+      event: 'INSERT', schema: 'public', table: 'video_calls',
+      filter: `callee_id=eq.${user.id}`
+    }, async (payload) => {
+      if (payload.new.status !== 'ringing') return;
+
+      const { data: callerProfile } = await sb.from('profiles')
+        .select('username, avatar_url')
+        .eq('id', payload.new.caller_id)
+        .single();
+
+      pendingCall = {
+        callId:      payload.new.id,
+        channelName: payload.new.channel_name,
+        callerId:    payload.new.caller_id
+      };
+
+      showIncomingCall(
+        '@' + (callerProfile?.username || 'user'),
+        callerProfile?.avatar_url || '😊'
+      );
+    }).subscribe();
 }
 
 function onLogout() {
@@ -1580,7 +1601,7 @@ function addBubble(type, text) {
   msgs.scrollTop = msgs.scrollHeight;
 }
 
-function escalateToVideo() {
+async function escalateToVideo() {
   if (!currentUser || !activeChat?.userId) {
     showToast('No active real match to call');
     return;
@@ -1591,6 +1612,17 @@ function escalateToVideo() {
   // converge on the exact same Agora channel without a server round trip.
   const sorted = [currentUser.id, partnerId].sort();
   const channelName = 'feba-' + sorted.join('').replace(/-/g, '').substring(0, 40);
+
+  // Notify the real partner — without this, only you would join the channel.
+  const { error } = await sb.from('video_calls').insert({
+    caller_id: currentUser.id,
+    callee_id: partnerId,
+    channel_name: channelName,
+    status: 'ringing'
+  });
+  if (error) { console.error('Call invite error:', error); showToast('Could not start call'); return; }
+
+  showToast('Calling…');
   openVC(channelName, partnerId);
 }
 
@@ -1828,14 +1860,40 @@ async function vcSendMsg() {
 }
 
 // ── INCOMING CALL ────────────────────
+let pendingCall = null; // {callId, channelName, callerId} — set by the real incoming-call subscription
+
 function showIncomingCall(name, emoji) {
   document.getElementById('icAv').textContent   = emoji;
   document.getElementById('icName').textContent = name;
   document.getElementById('incCall').classList.add('on');
-  setTimeout(()=>document.getElementById('incCall').classList.remove('on'), 25000);
+  setTimeout(() => {
+    if (document.getElementById('incCall').classList.contains('on')) {
+      document.getElementById('incCall').classList.remove('on');
+      if (pendingCall) {
+        const missedId = pendingCall.callId;
+        pendingCall = null;
+        sb.from('video_calls').update({ status: 'missed' }).eq('id', missedId).then(()=>{}, ()=>{});
+      }
+    }
+  }, 25000);
 }
-function acceptCall()  { document.getElementById('incCall').classList.remove('on'); openVC(document.getElementById('icName').textContent, document.getElementById('icAv').textContent); }
-function declineCall() { document.getElementById('incCall').classList.remove('on'); }
+
+async function acceptCall() {
+  document.getElementById('incCall').classList.remove('on');
+  if (!pendingCall) return;
+  const { channelName, callerId, callId } = pendingCall;
+  pendingCall = null;
+  await sb.from('video_calls').update({ status: 'accepted' }).eq('id', callId).catch(()=>{});
+  openVC(channelName, callerId);
+}
+
+async function declineCall() {
+  document.getElementById('incCall').classList.remove('on');
+  if (!pendingCall) return;
+  const callId = pendingCall.callId;
+  pendingCall = null;
+  await sb.from('video_calls').update({ status: 'declined' }).eq('id', callId).catch(()=>{});
+}
 
 // ── GIFTS ────────────────────────────
 function renderGiftsGrid() {
