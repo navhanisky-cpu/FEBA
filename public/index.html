@@ -1847,51 +1847,62 @@ async function endVC() {
   if (vcEnding) return; // already ending (e.g. triggered both locally and via the realtime echo)
   vcEnding = true;
 
-  clearInterval(callTimer);
-
-  if (vcChatSubscription)  { sb.removeChannel(vcChatSubscription);  vcChatSubscription  = null; }
-  if (callEndSubscription) { sb.removeChannel(callEndSubscription); callEndSubscription = null; }
-  currentCallPartnerId = null;
-
-  // Signal the end so the OTHER real device disconnects immediately too,
-  // instead of waiting on Agora's own (sometimes slow) disconnect detection.
-  if (currentCallId) {
-    await sb.from('video_calls').update({ status: 'ended' }).eq('id', currentCallId).catch(()=>{});
-    currentCallId = null;
-  }
-  if (currentRoomId) {
-    await sb.rpc('end_match', { p_room_id: currentRoomId }).catch(()=>{});
-    currentRoomId = null;
-  }
-
-  // A woman's video-mode slot was just consumed by this call —
-  // put her back in the waiting pool so the next man can find her.
-  if (currentGender === 'woman') {
-    enterWaitingPool('video');
-  }
-
-  // Leave Agora channel and clean up
   try {
-    if (localTracks.audio) { localTracks.audio.stop(); localTracks.audio.close(); localTracks.audio = null; }
-    if (localTracks.video) { localTracks.video.stop(); localTracks.video.close(); localTracks.video = null; }
-    if (agoraClient)       { await agoraClient.leave(); agoraClient = null; }
-  } catch(e) { console.log('Cleanup error:', e); }
+    clearInterval(callTimer);
 
-  // Reset video elements
-  const remoteVideo = document.getElementById('remoteVideo');
-  const localVideo  = document.getElementById('localVideo');
-  if (remoteVideo) remoteVideo.style.display = 'none';
-  if (localVideo)  localVideo.style.display  = 'none';
-  document.getElementById('vcRemotePh').style.display = 'flex';
-  document.getElementById('vcSelfEmoji').style.display = 'block';
+    if (vcChatSubscription)  { try { sb.removeChannel(vcChatSubscription);  } catch(e){} vcChatSubscription  = null; }
+    if (callEndSubscription) { try { sb.removeChannel(callEndSubscription); } catch(e){} callEndSubscription = null; }
+    currentCallPartnerId = null;
 
-  document.getElementById('vcScr').classList.remove('on');
-  document.getElementById('vcChat').classList.remove('on');
-  vcMuted=false; vcCamOff=false;
-  ['vcMute','vcCam'].forEach(id=>{
-    const b=document.getElementById(id);
-    b.classList.remove('off'); b.textContent=id==='vcMute'?'🎤':'📷';
-  });
+    // Signal the end so the OTHER real device disconnects immediately too,
+    // instead of waiting on Agora's own (sometimes slow) disconnect detection.
+    // Fire-and-forget with .then(success, failure) — never let a backend
+    // hiccup here block or crash the local hang-up.
+    if (currentCallId) {
+      const idToEnd = currentCallId;
+      currentCallId = null;
+      sb.from('video_calls').update({ status: 'ended' }).eq('id', idToEnd)
+        .then(() => {}, (e) => console.log('video_calls end error:', e));
+    }
+    if (currentRoomId) {
+      const roomToEnd = currentRoomId;
+      currentRoomId = null;
+      sb.rpc('end_match', { p_room_id: roomToEnd })
+        .then(() => {}, (e) => console.log('end_match error:', e));
+    }
+
+    // A woman's video-mode slot was just consumed by this call —
+    // put her back in the waiting pool so the next man can find her.
+    if (currentGender === 'woman') {
+      enterWaitingPool('video').catch?.(()=>{});
+    }
+
+    // Leave Agora channel and clean up
+    try {
+      if (localTracks.audio) { localTracks.audio.stop(); localTracks.audio.close(); localTracks.audio = null; }
+      if (localTracks.video) { localTracks.video.stop(); localTracks.video.close(); localTracks.video = null; }
+      if (agoraClient)       { await agoraClient.leave(); agoraClient = null; }
+    } catch(e) { console.log('Cleanup error:', e); }
+
+  } finally {
+    // No matter what failed above, ALWAYS close the call screen for the user.
+    const remoteVideo  = document.getElementById('remoteVideo');
+    const localVideo   = document.getElementById('localVideo');
+    const vcRemotePh   = document.getElementById('vcRemotePh');
+    const vcSelfEmoji  = document.getElementById('vcSelfEmoji');
+    if (remoteVideo)  remoteVideo.style.display  = 'none';
+    if (localVideo)   localVideo.style.display   = 'none';
+    if (vcRemotePh)   vcRemotePh.style.display   = 'flex';
+    if (vcSelfEmoji)  vcSelfEmoji.style.display  = 'block';
+
+    document.getElementById('vcScr').classList.remove('on');
+    document.getElementById('vcChat').classList.remove('on');
+    vcMuted=false; vcCamOff=false;
+    ['vcMute','vcCam'].forEach(id=>{
+      const b=document.getElementById(id);
+      if (b) { b.classList.remove('off'); b.textContent=id==='vcMute'?'🎤':'📷'; }
+    });
+  }
 }
 
 function nextMatch() { endVC(); setTimeout(startMatch, 600); }
@@ -1974,7 +1985,7 @@ async function acceptCall() {
   if (!pendingCall) return;
   const { channelName, callerId, callId } = pendingCall;
   pendingCall = null;
-  await sb.from('video_calls').update({ status: 'accepted' }).eq('id', callId).catch(()=>{});
+  await sb.from('video_calls').update({ status: 'accepted' }).eq('id', callId).then(()=>{}, ()=>{});
   currentCallId = callId;
   currentRoomId = null; // this call is signaled via video_calls, not match_rooms
   openVC(channelName, callerId);
@@ -1985,7 +1996,7 @@ async function declineCall() {
   if (!pendingCall) return;
   const callId = pendingCall.callId;
   pendingCall = null;
-  await sb.from('video_calls').update({ status: 'declined' }).eq('id', callId).catch(()=>{});
+  await sb.from('video_calls').update({ status: 'declined' }).eq('id', callId).then(()=>{}, ()=>{});
 }
 
 // ── GIFTS ────────────────────────────
