@@ -1445,6 +1445,8 @@ async function enterWaitingPool(mode) {
 
     if (data.matched) {
       // A man was already waiting in this mode — connect immediately.
+      currentRoomId = data.room_id;
+      currentCallId = null; // this call is signaled via match_rooms, not video_calls
       if (mode === 'video') await openVC(data.channel_name, data.partner_id, null);
       else openTextMatch(data.channel_name, data.partner_id);
       return;
@@ -1461,6 +1463,8 @@ async function enterWaitingPool(mode) {
       }, async (payload) => {
         if (payload.new.status === 'active') {
           if (womenWaitingSubs[mode]) { sb.removeChannel(womenWaitingSubs[mode]); womenWaitingSubs[mode] = null; }
+          currentRoomId = data.room_id;
+          currentCallId = null; // this call is signaled via match_rooms, not video_calls
           if (mode === 'video') await openVC(data.channel_name, payload.new.user_b, null);
           else openTextMatch(data.channel_name, payload.new.user_b);
         }
@@ -1493,6 +1497,7 @@ async function startMatch() {
 
     if (error) throw error;
     currentRoomId = data.room_id;
+    currentCallId = null; // this call is signaled via match_rooms, not video_calls
 
     if (data.matched) {
       document.getElementById('matchOv').classList.remove('on');
@@ -1661,13 +1666,16 @@ async function escalateToVideo() {
   const channelName = 'feba-' + sorted.join('').replace(/-/g, '').substring(0, 40);
 
   // Notify the real partner — without this, only you would join the channel.
-  const { error } = await sb.from('video_calls').insert({
+  const { data: callRow, error } = await sb.from('video_calls').insert({
     caller_id: currentUser.id,
     callee_id: partnerId,
     channel_name: channelName,
     status: 'ringing'
-  });
+  }).select().single();
   if (error) { console.error('Call invite error:', error); showToast('Could not start call'); return; }
+
+  currentCallId = callRow?.id || null;
+  currentRoomId = null; // this call is signaled via video_calls, not match_rooms
 
   showToast('Calling…');
   openVC(channelName, partnerId);
@@ -1694,7 +1702,10 @@ async function getAgoraToken(channelName, uid) {
 }
 
 let currentCallPartnerId = null;
-let vcChatSubscription = null;
+let vcChatSubscription   = null;
+let currentCallId        = null;  // video_calls row id, if this call came via escalateToVideo/acceptCall
+let callEndSubscription  = null;  // realtime listener that ends the call locally when the OTHER side ends it
+let vcEnding             = false; // guards endVC() against firing twice (once locally, once from the realtime echo)
 
 async function openVC(channelName, partnerId, _unused) {
   if (!channelName || !channelName.startsWith('feba-') || !partnerId) {
@@ -1704,6 +1715,7 @@ async function openVC(channelName, partnerId, _unused) {
     return;
   }
 
+  vcEnding = false;
   currentCallPartnerId = partnerId;
 
   // Look up the real partner's profile for display
@@ -1787,16 +1799,33 @@ async function openVC(channelName, partnerId, _unused) {
       }
     }, 1000);
 
-    // Real in-call chat — subscribe to actual messages from the real partner
-    if (currentUser && vcChatSubscription) { sb.removeChannel(vcChatSubscription); vcChatSubscription = null; }
-    if (currentUser) {
-      vcChatSubscription = sb.channel('vc-chat-' + currentUser.id)
+    // Real-time "other side ended the call" detection — don't rely solely on
+    // Agora's own peer-disconnect detection, which can be slow or miss a
+    // non-graceful exit.
+    if (callEndSubscription) { sb.removeChannel(callEndSubscription); callEndSubscription = null; }
+
+    if (currentCallId) {
+      // This call came from a chat "Video" button (video_calls signaling)
+      callEndSubscription = sb.channel('call-end-' + currentCallId)
         .on('postgres_changes', {
-          event: 'INSERT', schema: 'public', table: 'messages',
-          filter: `to_user=eq.${currentUser.id}`
-        }, p => {
-          if (p.new.from_user === currentCallPartnerId) {
-            addVcBubble(displayName, p.new.body, false);
+          event: 'UPDATE', schema: 'public', table: 'video_calls',
+          filter: `id=eq.${currentCallId}`
+        }, (payload) => {
+          if (['ended', 'declined', 'missed'].includes(payload.new.status) && !vcEnding) {
+            showToast('Call ended');
+            endVC();
+          }
+        }).subscribe();
+    } else if (currentRoomId) {
+      // This call came from the Start button / match_rooms flow
+      callEndSubscription = sb.channel('call-end-room-' + currentRoomId)
+        .on('postgres_changes', {
+          event: 'UPDATE', schema: 'public', table: 'match_rooms',
+          filter: `id=eq.${currentRoomId}`
+        }, (payload) => {
+          if (payload.new.status === 'ended' && !vcEnding) {
+            showToast('Call ended');
+            endVC();
           }
         }).subscribe();
     }
@@ -1815,12 +1844,21 @@ async function openVC(channelName, partnerId, _unused) {
 }
 
 async function endVC() {
+  if (vcEnding) return; // already ending (e.g. triggered both locally and via the realtime echo)
+  vcEnding = true;
+
   clearInterval(callTimer);
 
-  if (vcChatSubscription) { sb.removeChannel(vcChatSubscription); vcChatSubscription = null; }
+  if (vcChatSubscription)  { sb.removeChannel(vcChatSubscription);  vcChatSubscription  = null; }
+  if (callEndSubscription) { sb.removeChannel(callEndSubscription); callEndSubscription = null; }
   currentCallPartnerId = null;
 
-  // End the room in Supabase
+  // Signal the end so the OTHER real device disconnects immediately too,
+  // instead of waiting on Agora's own (sometimes slow) disconnect detection.
+  if (currentCallId) {
+    await sb.from('video_calls').update({ status: 'ended' }).eq('id', currentCallId).catch(()=>{});
+    currentCallId = null;
+  }
   if (currentRoomId) {
     await sb.rpc('end_match', { p_room_id: currentRoomId }).catch(()=>{});
     currentRoomId = null;
@@ -1937,6 +1975,8 @@ async function acceptCall() {
   const { channelName, callerId, callId } = pendingCall;
   pendingCall = null;
   await sb.from('video_calls').update({ status: 'accepted' }).eq('id', callId).catch(()=>{});
+  currentCallId = callId;
+  currentRoomId = null; // this call is signaled via video_calls, not match_rooms
   openVC(channelName, callerId);
 }
 
