@@ -771,6 +771,9 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
       </div>
     </div>
     <div class="me-menu">
+      <div class="me-row" id="verifyRow" onclick="openVerification()" style="display:none">
+        <span class="mr-ico">🪪</span><span class="mr-lbl">Verify Photo <span id="verifyStatusBadge" style="font-size:.7rem;color:var(--mid);margin-left:5px"></span></span><span class="mr-arrow">›</span>
+      </div>
       <div class="me-row" onclick="openUsernameChange()"><span class="mr-ico">✏️</span><span class="mr-lbl">Change Username</span><span class="mr-arrow">›</span></div>
       <div class="me-row" onclick="openTopup()"><span class="mr-ico">🪙</span><span class="mr-lbl">Buy Coins</span><span class="mr-arrow">›</span></div>
       <div class="me-row" onclick="showToast('My earnings coming soon')"><span class="mr-ico">💰</span><span class="mr-lbl">My Earnings</span><span class="mr-arrow">›</span></div>
@@ -793,6 +796,30 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sa
     <div class="auth-err" id="usernameErr"></div>
     <button class="btn-buy" id="usernameBtn" onclick="submitUsernameChange()" style="margin-top:8px">
       ✅ Save Username
+    </button>
+  </div>
+</div>
+
+<!-- VERIFICATION PHOTO SHEET -->
+<div class="topup-ov" id="verifyOv" onclick="if(event.target===this)closeVerification()">
+  <div class="topup-box">
+    <button class="topup-close" onclick="closeVerification()">✕</button>
+    <div class="topup-h">🪪 Verify Your Photo</div>
+    <div class="topup-sub" id="verifySub">Upload a clear selfie so we can confirm it's really you. Once approved, you'll be able to earn coins from calls.</div>
+
+    <div id="verifyPreviewWrap" style="display:none;margin:14px 0;text-align:center">
+      <img id="verifyPreview" style="max-width:100%;max-height:220px;border-radius:12px;object-fit:cover"/>
+    </div>
+
+    <input type="file" id="verifyFileInp" accept="image/*" capture="user" style="display:none" onchange="onVerifyFileSelected(event)"/>
+    <button class="btn-buy" id="verifyPickBtn" onclick="document.getElementById('verifyFileInp').click()" style="margin-top:8px">
+      📷 Choose Photo
+    </button>
+
+    <div class="auth-err" id="verifyErr"></div>
+
+    <button class="btn-buy" id="verifySubmitBtn" onclick="submitVerificationPhoto()" style="margin-top:8px;display:none">
+      ✅ Submit for Review
     </button>
   </div>
 </div>
@@ -1295,6 +1322,25 @@ function updateMeProfile(user, profile) {
   document.getElementById('meName').textContent    = displayName;
   document.getElementById("meEmail").style.display = "none";
   document.getElementById('ms-coins').textContent  = userCoins.toLocaleString();
+
+  // Verified badge on the avatar
+  const badge = document.getElementById('meVBadge');
+  if (badge) badge.style.display = profile?.verification_status === 'verified' ? 'block' : 'none';
+
+  // Verify Photo row — only relevant for women (they're the ones who earn coins)
+  const verifyRow = document.getElementById('verifyRow');
+  if (verifyRow) {
+    verifyRow.style.display = currentGender === 'woman' ? 'flex' : 'none';
+    const statusBadge = document.getElementById('verifyStatusBadge');
+    if (statusBadge) {
+      const statusText = {
+        verified: '✅ Verified',
+        pending:  '⏳ Pending review',
+        rejected: '❌ Rejected — resubmit'
+      }[profile?.verification_status] || 'Not verified';
+      statusBadge.textContent = statusText;
+    }
+  }
 }
 
 // ── COIN UI ──────────────────────────
@@ -2118,6 +2164,110 @@ async function submitUsernameChange() {
   closeUsernameChange();
   showToast(`✅ Username changed to @${newName}`);
   document.getElementById('meName').textContent = '@' + newName;
+}
+
+// ── VERIFICATION PHOTO ────────────────
+let verifySelectedFile = null;
+
+async function openVerification() {
+  document.getElementById('verifyOv').classList.add('on');
+  document.getElementById('verifyErr').classList.remove('on');
+  document.getElementById('verifyErr').textContent = '';
+  verifySelectedFile = null;
+  document.getElementById('verifyPreviewWrap').style.display = 'none';
+  document.getElementById('verifySubmitBtn').style.display = 'none';
+  document.getElementById('verifyPickBtn').style.display = 'block';
+
+  // Show current status so she knows where she stands
+  if (currentUser) {
+    const { data: profile } = await sb.from('profiles')
+      .select('verification_status')
+      .eq('id', currentUser.id)
+      .maybeSingle();
+
+    const sub = document.getElementById('verifySub');
+    if (profile?.verification_status === 'pending') {
+      sub.textContent = "Your photo is under review. We'll notify you once it's approved.";
+    } else if (profile?.verification_status === 'verified') {
+      sub.textContent = "You're already verified! You can resubmit a new photo if you'd like to update it.";
+    } else if (profile?.verification_status === 'rejected') {
+      sub.textContent = 'Your last photo was rejected. Please upload a new, clear selfie to try again.';
+    } else {
+      sub.textContent = "Upload a clear selfie so we can confirm it's really you. Once approved, you'll be able to earn coins from calls.";
+    }
+  }
+}
+
+function closeVerification() {
+  document.getElementById('verifyOv').classList.remove('on');
+}
+
+function onVerifyFileSelected(event) {
+  const file = event.target.files?.[0];
+  const errEl = document.getElementById('verifyErr');
+  errEl.classList.remove('on'); errEl.textContent = '';
+
+  if (!file) return;
+
+  if (!file.type.startsWith('image/')) {
+    showErr(errEl, 'Please choose an image file');
+    return;
+  }
+  if (file.size > 8 * 1024 * 1024) {
+    showErr(errEl, 'Image is too large — please choose one under 8MB');
+    return;
+  }
+
+  verifySelectedFile = file;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    document.getElementById('verifyPreview').src = e.target.result;
+    document.getElementById('verifyPreviewWrap').style.display = 'block';
+    document.getElementById('verifySubmitBtn').style.display = 'block';
+  };
+  reader.readAsDataURL(file);
+}
+
+async function submitVerificationPhoto() {
+  const errEl = document.getElementById('verifyErr');
+  errEl.classList.remove('on'); errEl.textContent = '';
+
+  if (!currentUser) { showErr(errEl, 'Please log in first'); return; }
+  if (!verifySelectedFile) { showErr(errEl, 'Please choose a photo first'); return; }
+
+  const btn = document.getElementById('verifySubmitBtn');
+  btn.disabled = true; btn.textContent = '⏳ Uploading…';
+
+  try {
+    const ext  = (verifySelectedFile.name.split('.').pop() || 'jpg').toLowerCase();
+    const path = `${currentUser.id}/verification.${ext}`;
+
+    const { error: uploadError } = await sb.storage
+      .from('verification-photos')
+      .upload(path, verifySelectedFile, { upsert: true, contentType: verifySelectedFile.type });
+
+    if (uploadError) throw uploadError;
+
+    const { error: updateError } = await sb.from('profiles').update({
+      verification_status:       'pending',
+      verification_photo_path:   path,
+      verification_submitted_at: new Date().toISOString()
+    }).eq('id', currentUser.id);
+
+    if (updateError) throw updateError;
+
+    btn.disabled = false; btn.textContent = '✅ Submit for Review';
+    closeVerification();
+    showToast('Photo submitted — we\'ll review it soon!');
+
+    const statusBadge = document.getElementById('verifyStatusBadge');
+    if (statusBadge) statusBadge.textContent = '⏳ Pending review';
+
+  } catch (err) {
+    console.error('Verification upload error:', err);
+    btn.disabled = false; btn.textContent = '✅ Submit for Review';
+    showErr(errEl, 'Upload failed — please try again');
+  }
 }
 
 // ── FRIENDS SYSTEM ────────────────────
