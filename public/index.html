@@ -1194,14 +1194,11 @@ async function onLogin(user) {
   // Mark user as online
   try { await sb.rpc('set_user_online') } catch(e) {};
 
-  // Women automatically enter a waiting room so men can find them
+  // Women automatically enter waiting rooms (both video AND text) so any
+  // man looking for either mode can find them.
   if (currentGender === 'woman') {
-    try {
-      await sb.rpc('find_or_create_match', {
-        p_mode: 'video',
-        p_gender_filter: 'female'
-      });
-    } catch(e) { console.log('Auto-room:', e); }
+    await enterWaitingPool('video');
+    await enterWaitingPool('text');
   }
 
   // Avatar carousel (real online users only, from ONLINE_USERS)
@@ -1430,6 +1427,49 @@ const CALL_CONNECT_COST = 3;   // charged immediately on connect
 const CALL_PER_MIN_COST = 10;  // charged every 60s after first 15s
 let callPhase = 'connecting';  // 'connecting' | 'initial' | 'running'
 
+// Women's per-mode waiting rooms — kept separate from men's startMatch flow
+// since women don't see the matching overlay/timeout and are meant to stay
+// continuously available rather than give up after 30s.
+let womenWaitingSubs    = { video: null, text: null };
+let womenWaitingRoomIds = { video: null, text: null };
+
+async function enterWaitingPool(mode) {
+  if (currentGender !== 'woman' || !currentUser) return;
+
+  try {
+    const { data, error } = await sb.rpc('find_or_create_match', {
+      p_mode: mode,
+      p_gender_filter: 'female'
+    });
+    if (error) { console.log('enterWaitingPool error', mode, error); return; }
+
+    if (data.matched) {
+      // A man was already waiting in this mode — connect immediately.
+      if (mode === 'video') await openVC(data.channel_name, data.partner_id, null);
+      else openTextMatch(data.channel_name, data.partner_id);
+      return;
+    }
+
+    // Waiting — remember the room and listen for a man to join it.
+    womenWaitingRoomIds[mode] = data.room_id;
+    if (womenWaitingSubs[mode]) { sb.removeChannel(womenWaitingSubs[mode]); womenWaitingSubs[mode] = null; }
+
+    womenWaitingSubs[mode] = sb.channel('woman-room-' + data.room_id)
+      .on('postgres_changes', {
+        event: 'UPDATE', schema: 'public',
+        table: 'match_rooms', filter: `id=eq.${data.room_id}`
+      }, async (payload) => {
+        if (payload.new.status === 'active') {
+          if (womenWaitingSubs[mode]) { sb.removeChannel(womenWaitingSubs[mode]); womenWaitingSubs[mode] = null; }
+          if (mode === 'video') await openVC(data.channel_name, payload.new.user_b, null);
+          else openTextMatch(data.channel_name, payload.new.user_b);
+        }
+      }).subscribe();
+  } catch (e) {
+    console.log('enterWaitingPool exception', mode, e);
+  }
+}
+
 async function startMatch() {
   if (!currentUser) { showToast('Please log in first'); return; }
 
@@ -1523,18 +1563,18 @@ async function openTextMatch(channelName, matchedUserId = null) {
     .single();
 
   if (!error && profile) {
-    openChat('@' + (profile.username || 'user'), profile.avatar_url || '😊', true, matchedUserId);
+    openChat('@' + (profile.username || 'user'), profile.avatar_url || '😊', true, matchedUserId, true);
   } else {
     // Profile lookup failed — still route messages correctly, just with a fallback label
-    openChat('Match', '😊', true, matchedUserId);
+    openChat('Match', '😊', true, matchedUserId, true);
   }
 }
 
 // ── CHAT ────────────────────────────
 let chatSubscription = null;
 
-function openChat(name, emoji, online, userId = null) {
-  activeChat = { name, emoji, online, userId };
+function openChat(name, emoji, online, userId = null, fromMatch = false) {
+  activeChat = { name, emoji, online, userId, fromMatch };
   document.getElementById('ctAv').textContent    = emoji;
   document.getElementById('ctName').textContent  = name;
   document.getElementById('ctStat').textContent  = online ? '● Online' : '○ Offline';
@@ -1563,8 +1603,15 @@ function openChat(name, emoji, online, userId = null) {
 }
 
 function closeChat() {
+  const wasRealMatch = activeChat?.fromMatch;
   document.getElementById('chatScr').classList.remove('on');
   if (chatSubscription) { sb.removeChannel(chatSubscription); chatSubscription = null; }
+
+  // A woman's text-mode slot was just consumed by this conversation —
+  // put her back in the waiting pool so the next man can find her.
+  if (currentGender === 'woman' && wasRealMatch) {
+    enterWaitingPool('text');
+  }
 }
 
 async function sendMsg() {
@@ -1777,6 +1824,12 @@ async function endVC() {
   if (currentRoomId) {
     await sb.rpc('end_match', { p_room_id: currentRoomId }).catch(()=>{});
     currentRoomId = null;
+  }
+
+  // A woman's video-mode slot was just consumed by this call —
+  // put her back in the waiting pool so the next man can find her.
+  if (currentGender === 'woman') {
+    enterWaitingPool('video');
   }
 
   // Leave Agora channel and clean up
